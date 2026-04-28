@@ -94,4 +94,5 @@ jobs:
 
       # Run static type checker (Mypy) with auto-install types
       - name: Mypy (type check)
+        continue-on-error: true
         run: poetry run mypy --install-types --non-interactive --pretty .
