@@ -1,0 +1,152 @@
+name: Build & Publish EXE (Release or Tag)
+
+# Run workflow when:
+# - a release is published in GitHub UI
+# - any tag is pushed (tags: ["*"])
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["*"]
+
+# Permissions: allow writing release assets to the repository
+permissions:
+  contents: write
+
+# Concurrency: group runs per tag/release, don't cancel older runs
+concurrency:
+  group: rel-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+# Global environment variables
+env:
+  PYTHON_VERSION: "3.12"
+  APP_NAME: "uq_desktop_processor"
+  SPEC_PATH: "UrbanQualityAI.spec"
+  TAG_NAME: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      # Get repository code
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # fetch full history (needed for branch ancestry check)
+          ref: ${{ env.TAG_NAME }}
+
+      # Verify that the tag commit is part of the main branch history (PowerShell)
+      - name: Verify tag points to commit on main
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
+          $TagSha = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor $TagSha origin/main
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Tag '${{ env.TAG_NAME }}' does not point to a commit on the 'main' branch. Publishing blocked."
+          }
+
+      # Install a chosen Python version + enable pip cache (helps to install Poetry)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            poetry.lock
+
+      # Install Poetry itself (via pip)
+      - name: Install Poetry
+        run: python -m pip install --upgrade pip poetry
+
+      # Keep virtualenv inside repo for easier caching
+      - name: Enable in-project venv for Poetry
+        run: poetry config virtualenvs.in-project true
+
+      # Cache the .venv folder based on lockfile + Python version
+      - name: Cache Poetry venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+
+      # Install all dependencies (main + dev) from pyproject.toml
+      - name: Install deps (poetry)
+        run: poetry install --no-interaction --with dev
+
+      # Verify .spec file exists, otherwise fail with error
+      - name: Verify .spec exists
+        run: |
+          if (-not (Test-Path "${{ env.SPEC_PATH }}")) {
+            Write-Error "Missing PyInstaller spec file '${{ env.SPEC_PATH }}'"
+          }
+
+      # Build EXE using PyInstaller with the .spec file
+      # Then list the contents of dist/ for debugging/logging
+      - name: Build exe with PyInstaller (.spec only)
+        run: |
+          poetry run pyinstaller --noconfirm --clean "${{ env.SPEC_PATH }}"
+          if (Test-Path dist) { Get-ChildItem -Recurse dist | Format-Table -AutoSize }
+
+      # Sanity check: ensure at least one .exe exists before publishing
+      - name: Ensure at least one EXE exists
+        run: |
+          $files = Get-ChildItem -Path dist -Filter *.exe -Recurse -ErrorAction SilentlyContinue
+          if (-not $files) { Write-Error "No .exe files found in dist/**" }
+
+      # Package all built EXE files into a single ZIP archive
+      - name: Package EXE(s) into ZIP
+        run: |
+          $zipName = "dist/${{ env.APP_NAME }}-${{ env.TAG_NAME }}.zip"
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          $exeFiles = Get-ChildItem -Path dist -Filter *.exe -Recurse | Select-Object -ExpandProperty FullName
+          if (-not $exeFiles) { Write-Error "No .exe files to zip"; exit 1 }
+          Compress-Archive -Path $exeFiles -DestinationPath $zipName -Force
+          Get-ChildItem -Path dist -Filter *.zip -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+      # Generate a SHA256 checksum file for the created ZIP
+      - name: Create sha256
+        run: |
+          $zipPath = "dist/${{ env.APP_NAME }}-${{ env.TAG_NAME }}.zip"
+          $hash = Get-FileHash $zipPath -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+          $hash | Out-File -FilePath "dist/${{ env.APP_NAME }}-${{ env.TAG_NAME }}.sha256" -Encoding ascii
+          Get-ChildItem -Path dist -Filter *.sha256 -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+      # Publish release metadata on GitHub (create or update release without assets)
+      - name: Create/Update GitHub Release (no files)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.TAG_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload the generated ZIP file as a release asset
+      - name: Upload ZIP asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG_NAME }}
+          file: dist/${{ env.APP_NAME }}-${{ env.TAG_NAME }}.zip
+          overwrite: true
+          file_glob: false
+
+      # Upload the SHA256 checksum file as a release asset
+      - name: Upload SHA256 asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG_NAME }}
+          file: dist/${{ env.APP_NAME }}-${{ env.TAG_NAME }}.sha256
+          overwrite: true
+          file_glob: false

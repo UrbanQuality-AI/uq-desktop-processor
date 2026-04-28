@@ -1,0 +1,86 @@
+name: Build EXE on PR
+
+# Run only on pull requests targeting develop or main
+on:
+  pull_request:
+    branches: [develop, main]
+
+# Concurrency: one run per commit in a PR
+concurrency:
+  group: pr-exe-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+# Least-privilege permissions
+permissions:
+  contents: read
+
+# Global environment variables
+env:
+  PYTHON_VERSION: "3.12"
+  APP_NAME: "uq_desktop_processor"
+  SPEC_PATH: "UrbanQualityAI.spec"
+
+# Job: build Windows EXE with PyInstaller
+jobs:
+  build-windows-exe:
+    name: Build Windows EXE (PyInstaller)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      # Get repository code
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Install chosen Python version + cache pip
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            poetry.lock
+
+      # Install all dependencies except CLIP, which needs a legacy-style build path.
+      - name: Install base deps (without CLIP)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip "setuptools<81" wheel
+          Get-Content requirements.txt | Where-Object { $_ -notmatch '^clip @ ' } | Set-Content requirements-ci.txt
+          Get-Content requirements-dev.txt | Where-Object { $_ -notmatch '^clip @ ' } | Set-Content requirements-dev-ci.txt
+          pip install -r requirements-ci.txt -r requirements-dev-ci.txt
+
+      # Install CLIP separately without isolated PEP 517 build and without overriding pinned deps.
+      - name: Install CLIP separately
+        run: pip install --no-deps --no-build-isolation "clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1"
+
+      # Ensure PyInstaller exists (exe builder).
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
+      # Verify .spec file exists, otherwise fail with error
+      - name: Verify .spec exists
+        run: |
+          if (-not (Test-Path "${{ env.SPEC_PATH }}")) {
+            Write-Error "Missing PyInstaller spec file '${{ env.SPEC_PATH }}'"
+          }
+
+      # Build EXE using PyInstaller with the .spec file
+      # Then list the contents of dist/ for debugging/logging
+      - name: Build exe with PyInstaller (.spec only)
+        run: |
+          python -m PyInstaller --noconfirm --clean "${{ env.SPEC_PATH }}"
+          if (Test-Path dist) { Get-ChildItem -Recurse dist | Format-Table -AutoSize }
+
+      # Upload the dist/ folder as artifact for download
+      - name: Upload artifact (dist)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-dist
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 7
