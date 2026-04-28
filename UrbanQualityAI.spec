@@ -1,9 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
 hiddenimports = []
+
+assets_src = os.path.join("src", "uq_desktop_processor", "assets")
+assets_icon = os.path.join(assets_src, "img", "icon.ico")
+assets_datas = []
+if os.path.exists(assets_src):
+    assets_datas.append((assets_src, os.path.join("uq_desktop_processor", "assets")))
 
 # Qt WebEngine and friends are notorious for dynamic imports; help PyInstaller a bit.
 hiddenimports += collect_submodules("PySide6.QtWebEngineCore")
@@ -20,7 +28,7 @@ a = Analysis(
         *collect_dynamic_libs("pyogrio"),
     ],
     datas=[
-        ("src\\uq_desktop_processor\\assets", "uq_desktop_processor\\assets"),
+        *assets_datas,
         # openai/CLIP tokenizer vocab (and other clip assets) must be bundled as data files,
         # otherwise the packaged app will crash trying to open `bpe_simple_vocab_16e6.txt.gz`.
         *collect_data_files("clip"),
@@ -62,6 +70,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["src\\uq_desktop_processor\\assets\\img\\icon.ico"],
+    icon=assets_icon if os.path.exists(assets_icon) else None,
 )
 
