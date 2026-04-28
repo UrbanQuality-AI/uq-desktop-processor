@@ -45,23 +45,6 @@ jobs:
             pyproject.toml
             poetry.lock
 
-      # Install Poetry itself (via pip)
-      - name: Install Poetry
-        run: python -m pip install --upgrade pip poetry
-
-      # Keep virtualenv inside repo for easier caching
-      - name: Enable in-project venv for Poetry
-        run: poetry config virtualenvs.in-project true
-
-      # Cache the .venv folder based on lockfile + Python version
-      - name: Cache Poetry venv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
-
       # Install all dependencies except CLIP, which needs a legacy-style build path.
       - name: Install base deps (without CLIP)
         shell: pwsh
@@ -75,6 +58,10 @@ jobs:
       - name: Install CLIP separately
         run: pip install --no-deps --no-build-isolation "clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1"
 
+      # Ensure PyInstaller exists (exe builder).
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
       # Verify .spec file exists, otherwise fail with error
       - name: Verify .spec exists
         run: |
@@ -86,7 +73,7 @@ jobs:
       # Then list the contents of dist/ for debugging/logging
       - name: Build exe with PyInstaller (.spec only)
         run: |
-          poetry run pyinstaller --noconfirm --clean "${{ env.SPEC_PATH }}"
+          python -m PyInstaller --noconfirm --clean "${{ env.SPEC_PATH }}"
           if (Test-Path dist) { Get-ChildItem -Recurse dist | Format-Table -AutoSize }
 
       # Upload the dist/ folder as artifact for download
