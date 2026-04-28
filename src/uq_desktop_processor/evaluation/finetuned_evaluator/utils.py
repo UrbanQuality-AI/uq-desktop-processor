@@ -88,9 +88,7 @@ def _load_checkpoint_and_model(
     # Create the classifier head with the correct shape
     model = ViTMultiHead(model_name, num_outputs=num_outputs, image_size=image_size).to(device)
 
-    def _resize_backbone_pos_embed_if_needed(
-            state_dict_in: dict[str, Any], model_in: nn.Module
-    ) -> dict[str, Any]:
+    def _resize_backbone_pos_embed_if_needed(state_dict_in: dict[str, Any], model_in: nn.Module) -> dict[str, Any]:
         """
         Resize checkpoint positional embeddings to the current model's image size if needed.
 
@@ -155,10 +153,10 @@ def _load_checkpoint_and_model(
 
         # Ensure the spatial tokens form a perfect square
         if (
-                source_size * source_size != source_grid_tokens
-                or target_size * target_size != target_grid_tokens
-                or source_grid_tokens <= 0
-                or target_grid_tokens <= 0
+            source_size * source_size != source_grid_tokens
+            or target_size * target_size != target_grid_tokens
+            or source_grid_tokens <= 0
+            or target_grid_tokens <= 0
         ):
             log.warning("Cannot infer square token grid. Falling back to model defaults.")
             state_dict_copy = dict(state_dict_in)
